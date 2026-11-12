@@ -1,0 +1,49 @@
+# =============================================
+# EPCS Shipbuilding Intelligence — .gitignore
+# 原则：DB / 日志 / 临时 / 备份 / 敏感原始资料 一律不入库
+# =============================================
+
+# --- 数据库文件 ---
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.bak*
+
+# --- 日志 ---
+logs/
+*.log
+05_Logs/
+
+# --- 临时文件 ---
+*.tmp
+*.temp
+*~
+Thumbs.db
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+
+# --- 备份 ---
+06_Backups/
+
+# --- 敏感原始资料（真实邮件 / 项目文件 / 图纸）---
+02_Original_References/
+*.eml
+*.pst
+*.ost
+*.dwg
+
+# --- 归档 ---
+09_Archive/
+
+# --- 敏感配置 / 密钥 ---
+*.env
+.env
+config.local.json
+secrets*.json
+
+# --- 其余仅供说明文档 / 脚本 / 源码 ---
+# (初始化脚本 scripts/ 与 migrations/ 允许入库)
