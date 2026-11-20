@@ -1,9 +1,13 @@
-# Phase1.2 实体关系 ER 图（R1 整改同步）
+# Phase1.2 实体关系 ER 图（R2 定向整改同步）
 
-> 说明：下图以 Mermaid `erDiagram` 表述 Phase 1.2 统一数据模型的**核心实体关系**，覆盖 R1 的 **75 张实体表**的主要关系。基数经 Mermaid 语法转为显式；`source_reference` / `object_link` / `object_dimension_tag` 等"多态桥表"以多态引用覆盖"各类对象↔来源 / 对象↔对象 / 对象↔维度"的 M:N，避免画面上无限发散。
+> **版本：R2**（Phase 1.2 复审「数据模型完整性与证据追溯」定向整改后）｜日期：2026-11-12
+> **R2 承接说明**：本文件已按 R2 复审结论同步修订，唯一真值源为《Phase1.2_数据库表结构设计.md》(**R2**)；统一统计口径 **实体表 75 / FTS5 虚表 24 / 触发器 126 / 视图 0**（R1 的「触发器 96」已作废）。R2 仅针对 7 项阻断（P1~P7）+ 4 项实现边界（B1~B4）定向整改，不全面重做 Phase 1.2。
+> **命名声明（P6）**：`check_polymorphic_refs` 是**应用层执行的一组 SQL 自检语句集**，SQLite **没有原生存储过程**、不能 `CALL`；R1 的 `sp_` 前缀命名已全文废弃，全文统一为新名。
+
+> 说明：下图以 Mermaid `erDiagram` 表述 Phase 1.2 统一数据模型的**核心实体关系**，覆盖当前（R2）**75 张实体表**的主要关系。基数经 Mermaid 语法转为显式；`source_reference` / `object_link` / `object_dimension_tag` 等"多态桥表"以多态引用覆盖"各类对象↔来源 / 对象↔对象 / 对象↔维度"的 M:N，避免画面上无限发散。
 > 图中"PFK"表示多态引用（`type + id` 双字段），**非硬外键**（实现细节与自检策略见《数据库表结构设计》§7.6）。
-> R1 整改同步：2026-11-12，以《Phase1.2_数据库表结构设计.md》(R1) 为唯一真值源
-> 统计口径（8 份文档一致）：实体表 **75**（业务主表 46 + 辅助 29）、FTS5 虚表 **24**、触发器 **96**、视图 **0**。`schema_version` 为独立元信息表，无业务关系，图中以注释标出。
+> R1 整改同步：2026-11-12（**R1 时点历史记录**）；当前唯一真值源为《Phase1.2_数据库表结构设计.md》(**R2**)，统计口径见上方「R2 承接说明」。
+> 统计口径（8 份文档一致）：实体表 **75**（业务主表 46 + 辅助 29）、FTS5 虚表 **24**、触发器 **126**、视图 **0**。`schema_version` 为独立元信息表，无业务关系，图中以注释标出。
 
 ```mermaid
 erDiagram
@@ -108,11 +112,13 @@ erDiagram
 2. **Issue↔ 计划活动/邮件/文档/会议/会议纪要/消息/证据 全部 M:N**：统一经 `object_link`（业务对象间）与 `source_reference`（业务对象↔来源载体）桥接；画面不逐对展开（见 ADR-4 / ADR-5）。
 3. **一个文件被多个事项引用 M:N**：经 `source_reference` 多对多，文件端只读不可反向篡改（B.4）；`context_excerpt` + `locator` 记录"引了哪段/哪图"。
 4. **Issue→Issue = 合并链（原图注作废，R1 改写）**：原稿写「落到 `entity` 经 `entity_relationship(synonym/merge)` 表达，`issue` 本身不直接自引用合并」，混淆了**业务实体**与**业务事项**，已作废。R1 改为：`business_subject`（统一事项主档）+ `business_subject_alias`（一事项多别名）+ `business_subject_merge`（**可逆合并链**，`undone_at` / `undone_by` / `undo_reason` / `is_active=0`）+ `business_subject_source`（事项↔来源证据 M:N）；`issue/risk/task/decision/knowledge_item` 各以 `subject_id TEXT NOT NULL UNIQUE` 1:1 挂到 `business_subject`。合并后**原业务记录不删除、不覆盖**，仅标 `status=MERGED` 并保留 `canonical_subject_id`，历史引用经 canonical 链可回放。**明确：`entity_relationship` 只表达业务实体（设备/船舶/区域/组织/供应商）的语义关系，不得承载业务事项合并。**
-5. **Decision / Evidence 挂任意对象**：经 `decision_link` / `evidence_link` 多态引用；`action_measure` 另有 `action_measure_link` 支持一个措施挂多个属主（M:N）。
+5. **Decision / Evidence 挂任意对象**：经 `decision_link` / `evidence_link` 多态引用；`action_measure` 另有 `action_measure_link` 承载 **0..N 附加属主**（R2-P2：主属主恰好一个，见真值源 §4 / ADR-14；R1 的「多个属主 M:N」表述已作废）。
 6. **基线只读（原图注作废，R1 改写）**：不再是「`baseline_version.is_readonly` 触发器强拦」的简略说法。改为**状态分离 + 四层防御**：删除 `UNIQUE(plan_id,is_active)` 与 `baseline_version.is_active`；新增 `plan_active_baseline`（当前生效指针，部分唯一索引 `uq_pab_active`）+ `baseline_switch_log`（切换授权审计）；`baseline_version` 由无差别 `BEFORE UPDATE/DELETE ... WHEN OLD.is_readonly=1 → RAISE(ABORT)` **全字段冻结**；切换为应用层单事务、全程不触碰基线行；再加应用层写入白名单与 `audit_log` 审计。
 7. **计划活动版本化与历史回放（R1 新增）**：`plan_activity` 为稳定主实体，`plan_activity_version` 为每版本属性快照（`change_type` ∈ ADDED/MODIFIED/UNCHANGED/REMOVED）；`baseline_version.plan_version_id` 指向完整计划版本，故可按 `baseline → plan_version → plan_activity_version` 回放批准计划、做 V1/V2 差异与滚动预测对比。
-8. **审核四表链（R1 新增）**：`review_queue`（纯审核任务）↔ `extraction_result` 经 `review_extraction_link` 建立 **M:N**（原图 `EXTRACTION_RESULT ||--o{ REVIEW_QUEUE` 直连已删除）；`review_queue` → `review_decision`（含审核人/时间/理由/证据）→ `review_result_object`（→ 7 类正式对象稳定映射）。支持一条抽取拆多对象、多条抽取合一对象；原始抽取由 `trg_er_immutable_u/d` 保护，审核后不得删除或覆盖。
-9. **多态引用的完整性（已知取舍）**：`source_reference` / `object_link` / `evidence_link` / `decision_link` / `action_measure_link` / `review_result_object` / `business_subject_alias` / `object_dimension_tag` 用 `type + id` 双字段，**无硬 FK**；由 `sp_check_polymorphic_refs`（按 type 分派的 UNION 孤儿查询，摄入后 + 定期执行，结果写 `audit_log`）+ 应用层校验 + 审计三层补偿，不伪装成数据库硬约束。
+8. **审核四表链（R1 新增）**：`review_queue`（纯审核任务）↔ `extraction_result` 经 `review_extraction_link` 建立 **M:N**（原图 `EXTRACTION_RESULT ||--o{ REVIEW_QUEUE` 直连已删除）；`review_queue` → `review_decision`（含审核人/时间/理由/证据；**R2-P3：`evidence_source_reference_id NOT NULL` + FK + 2 触发器，证据必填且未软删**）→ `review_result_object`（→ 7 类正式对象稳定映射，**`ENTITY` 为合法类型并纳入 P6 `q8` 映射**）。支持一条抽取拆多对象、多条抽取合一对象；原始抽取由 `trg_er_immutable_u/d` 保护，审核后不得删除或覆盖。
+9. **多态引用的完整性（已知取舍）**：`source_reference` / `object_link` / `evidence_link` / `decision_link` / `action_measure_link` / `review_result_object` / `business_subject_alias` / `object_dimension_tag` 用 `type + id` 双字段，**无硬 FK**；由 `check_polymorphic_refs`（**R2-P6：应用层 SQL 自检语句集、非存储过程；8 类引用 / 10 分支 / `target` 23 类全集 / `IS NULL` 反连接 / 双向验证**，摄入后 + 定期 + 迁移重建后执行，结果写 `audit_log`）+ 应用层校验 + 审计三层补偿，不伪装成数据库硬约束。
+
+> **R2-P1 补充（计划域关系）**：上图中 `PLAN` 与 `PLAN_VERSION` / `BASELINE_VERSION` / `PLAN_ACTIVE_BASELINE` / `PLAN_ACTIVITY` / `PLAN_ACTIVITY_VERSION` / `ACTIVITY_DEPENDENCY` / `PROGRESS_RECORD` / `BASELINE_SWITCH_LOG` 的关系均由**共享 `plan_id` 的复合外键**约束（父表补 `UNIQUE(plan_id,id)`），保证「计划 A 的活动不能挂到计划 B 的版本」「计划 A 的批准基线不能指向计划 B 的版本」在数据库层被拒绝（真值源 §2 / ADR-13）。**R2-P7 补充**：`BUSINESS_SUBJECT_MERGE` 的 merge-from / merge-to 两条关系受 `uq_bsm_active_from` 部分唯一索引 + 4 触发器约束，目标必须是有效根、禁止循环与多级链，撤销时状态原子恢复（ADR-18）。
 10. **FTS5 与软删**：24 张 trigram 虚表与内容表一一对应，索引全部历史版本；软删保留 FTS 行、仅 `is_deleted` 镜像置 1，查询带 `AND is_deleted=0` 并 JOIN 主表二次过滤。详见《数据库表结构设计》§7。
 
 ---
@@ -150,11 +156,11 @@ erDiagram
 
 ---
 
-## R1 整改同步说明（2026-11-12）
+## R1 整改同步说明（R1 时点记录；统计口径已按 R2 同步为 126）
 
 | # | 位置 | 改动点 |
 |---|---|---|
-| 1 | 顶部说明 | 加「R1 整改同步」标注、75 张表覆盖声明与统一统计口径 75 / 24 / 96 / 0 |
+| 1 | 顶部说明 | 加「R1 整改同步」标注（R1 时点）、75 张表覆盖声明；统一统计口径 75 / 24 / 96 / 0（R1）→ **R2 已修订为 75 / 24 / 126 / 0** |
 | 2 | Mermaid 图 | 新增 `department`、`plan_active_baseline`、`baseline_switch_log`、`plan_activity_version`、`business_subject` 四表、`review_*` 四表、`action_measure_link` / `decision_link` / `evidence_link` 等关系；补两处 `entity` 显式 FK |
 | 3 | Mermaid 图 | **删除** `EXTRACTION_RESULT ||--o{ REVIEW_QUEUE` 直连，改为经 `REVIEW_EXTRACTION_LINK` 的 M:N；`ENTITY ||--o{ ENTITY` 保留但标注「仅业务实体归一」 |
 | 4 | 图注 4 | **原结论作废**，改为 `business_subject` + 可逆 `business_subject_merge` 双层归一，明确 `entity_relationship` 不得承载事项合并 |
@@ -162,4 +168,4 @@ erDiagram
 | 6 | 新增图注 7~10 | 计划活动版本化与回放、审核四表链、多态引用三层补偿、FTS 软删镜像 |
 | 7 | 文末 | 新增「75 张表覆盖核对」简表与本节同步说明 |
 
-> 本图只表达**主要关系与基数**；完整字段、约束、索引、触发器与 FTS 一一对应以《Phase1.2_数据库表结构设计.md》(R1) 为唯一真值源。
+> 本图只表达**主要关系与基数**；完整字段、约束、索引、触发器与 FTS 一一对应以《Phase1.2_数据库表结构设计.md》(**R2**) 为唯一真值源。

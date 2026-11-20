@@ -1,5 +1,9 @@
 # Phase1.2 架构评审整改记录（R1）
 
+> **R2 承接说明（保留下方 R1 正文，不删除历史结论）**：本文件记录 **R1 时点**结论。系统架构师对 R1 复审为「暂不通过，继续定向整改」，R2 已针对 7 项阻断（P1~P7）+ 4 项实现边界（B1~B4）修订设计；正文中凡与 R2 冲突的结论（如「触发器 96」「全部闭环类断言」「PASS（约束强制）」「至少一个非空」「合并守卫未纳入本轮」等）均已在对应位置标注「**本结论已被 R2 修订，见 …**」。R1 原稿 = Git commit `7ac25c3` + 本地 `09_Archive/Phase1.2_R1_原稿/`（按 `.gitignore` 不入库）；R2 不修改归档副本、只做新提交、不 amend / 不 force push。
+> **当前唯一真值源**：《Phase1.2_数据库表结构设计.md》(**R2**)，统计口径 **75 / 24 / 126 / 视图 0**；逐项整改见《Phase1.2_R2_架构评审整改记录.md》与《Phase1.2_R2_架构评审整改完成报告.md》。
+> **命名声明（P6）**：`check_polymorphic_refs` 是**应用层执行的一组 SQL 自检语句集**，SQLite **没有原生存储过程**、不能 `CALL`；R1 的 `sp_` 前缀命名已全文废弃。
+
 > 项目：EPCS Shipbuilding Intelligence
 > 任务：基于系统架构师初审意见（六项建表阻断问题 + 一致性问题）对 Phase 1.2 设计做**定向整改**
 > 日期：2026-11-12
@@ -17,7 +21,7 @@
 | R1-3 | FTS5 trigram 统一 | 混用外部内容表与普通内容表；数据字典 `content_rowid='id'` 用 TEXT UUID（致命错误）；`document_fts(name,snapshot_json)` 等索引了业务表中不存在的列；无短词方案 | 统一**普通内容表 + biz_id UNINDEXED 显式映射**范式；一一对应内容表；索引全部历史版本；三向触发器；软删保留+查询过滤；重建与一致性检查 SQL；短词 LIKE 回退 + alias 补充 | **修订 ADR-7 / ADR-7b** | 软删 FTS 行策略、短词召回口径、存储放大评估 |
 | R1-4 | Entity 与业务事项归一 | 原 ADR-6 把「同一问题」的合并交给 `entity_relationship`，业务实体与业务事项混淆；Issue 无别名、无可逆合并 | 新增 `business_subject` 统一事项主档 + `business_subject_alias` + `business_subject_merge`（可逆合并）+ `business_subject_source`；`entity_relationship` 仅管业务实体 | **修订 ADR-6**（原结论作废） | 撤销后引用重指向、subject_kind 扩展流程 |
 | R1-5 | ReviewQueue 审核结果链 | 单 `extraction_result_id`/单 `decision`/单 `target_entity_id`，无法拆分、合并、多类型目标；无审核人/理由/证据；原抽取记录可被覆盖 | 拆为 `review_queue`（任务）+ `review_extraction_link`(M:N) + `review_decision`（结果明细，含审核人/时间/理由/证据）+ `review_result_object`（→正式对象稳定映射）；`extraction_result` 原始字段冻结触发器 | **修订 ADR-6 / ADR-7** | 审核对象类型枚举扩展流程 |
-| R1-6 | 字典/ER/SQL 一致性 | `department` 表缺失；两处 FK 未建；`project_member` NULL 唯一性漏洞；`action_measure` 无完整性；`object_dimension_tag` 无值约束；`entity_identifier`/`drawing_no` 唯一范围过宽；多态引用无自检；公共字段不齐；数量描述不一致 | 逐项整改 DDL；新增 `sp_check_polymorphic_refs` 自检策略；公共字段基线 A/B 逐表标注；重新统计并统一 8 份文档数量 | **修订 ADR-1/2/3/4/5/12** | department 与 organization 职责边界、公共字段裁剪 |
+| R1-6 | 字典/ER/SQL 一致性 | `department` 表缺失；两处 FK 未建；`project_member` NULL 唯一性漏洞；`action_measure` 无完整性；`object_dimension_tag` 无值约束；`entity_identifier`/`drawing_no` 唯一范围过宽；多态引用无自检；公共字段不齐；数量描述不一致 | 逐项整改 DDL；新增 `check_polymorphic_refs` 自检策略；公共字段基线 A/B 逐表标注；重新统计并统一 8 份文档数量 | **修订 ADR-1/2/3/4/5/12** | department 与 organization 职责边界、公共字段裁剪 |
 
 **额外架构检查（任务书 §三）10 项**逐项结论见 §8；**质量验收 10 项**逐项结论见 §9。
 
@@ -165,7 +169,7 @@ CREATE VIRTUAL TABLE issue_fts USING fts5(
 3. **FTS rowid 与 UUID 映射** → 不依赖整数 rowid 映射；`biz_id UNINDEXED` 显式携带业务 UUID；`owner_biz_id` 指向主对象。
 4. **INSERT/UPDATE/DELETE 同步** → 每张内容表 3 个触发器（`AFTER INSERT` / `AFTER UPDATE WHEN 文本字段变化` / `AFTER DELETE`）；UPDATE 采用「先 DELETE 旧 FTS 行再 INSERT 新行」避免 trigram 下的值漂移；软删用 `UPDATE ... SET is_deleted=1` 镜像（见下）。
 5. **软删除后如何处理索引** → **保留 FTS 行**，`is_deleted` 置 1；查询统一带 `AND is_deleted=0` 并 JOIN 主表二次过滤；不物理删 FTS 行（避免误删历史版本）。归档（ARCHIVED）不改动 FTS。
-6. **索引重建与一致性检查** → 重建 `DELETE FROM x_fts; INSERT INTO x_fts(...) SELECT ... FROM 业务表 WHERE is_deleted=0;`；一致性检查 SQL：①活跃业务行数 vs FTS 活跃行数差 ②`biz_id` 孤儿检查 ③`is_deleted` 镜像一致性 ④trigram 正向自检（已知样本必须命中，防止核验脚本自身失效）。
+6. **索引重建与一致性检查**〔**本 SQL 已被 R2-P5 方案 A 修订，见真值源 §7.6.1：去掉 `WHERE is_deleted=0`，全量同步含软删记录并保留 `is_deleted` 镜像**〕 → R1 原写法 `DELETE FROM x_fts; INSERT INTO x_fts(...) SELECT ... FROM 业务表 WHERE is_deleted=0;`（已作废）；一致性检查 SQL：①活跃业务行数 vs FTS 活跃行数差 ②`biz_id` 孤儿检查 ③`is_deleted` 镜像一致性 ④trigram 正向自检（已知样本必须命中，防止核验脚本自身失效）。
 7. **FTS 查询如何返回稳定业务对象 ID** → 返回 `biz_id`（+`owner_biz_id`），再回表；禁止把 TEXT UUID 用作 `content_rowid`。
 
 ### 3.5 中文检索测试与短词补充
@@ -244,11 +248,11 @@ CREATE VIRTUAL TABLE issue_fts USING fts5(
 | 2 | `project.main_object_entity_id` FK | 未建（注释"表后置，动态"） | **显式 `REFERENCES entity(id)`**；调整建表顺序：把 `entity` 等基础表前置到域1 之前（SQLite DDL 不校验后置表，但顺序前移可读性/可移植性更好） |
 | 3 | `equipment.manufacturer_entity_id` FK | 未建 | **显式 `REFERENCES entity(id)`** |
 | 4 | `project_member` NULL 唯一性 | `UNIQUE(project_id,organization_id,person_id,role_name,valid_from)` 中 person_id/valid_from 可 NULL → SQLite UNIQUE 视 NULL 互不相等，**重复行可插入** | 删除表内 UNIQUE，改**表达式唯一索引** `UNIQUE INDEX ON project_member(project_id, organization_id, COALESCE(person_id,''), role_name, COALESCE(valid_from,''))`（实测重复被拦截） |
-| 5 | `action_measure` 业务关联 | `source_owner_type/id` 多态无完整性 | 增 `risk_id`/`issue_id` 两个可空 FK + `CHECK((risk_id IS NOT NULL)+(issue_id IS NOT NULL)>=1)`；另设 `action_measure_link` 支持一个措施挂多个属主（M:N），并纳入多态自检 |
+| 5 | `action_measure` 业务关联 | `source_owner_type/id` 多态无完整性 | 增 `risk_id`/`issue_id` 两个可空 FK + `CHECK((risk_id IS NOT NULL)+(issue_id IS NOT NULL)>=1)`〔**本结论已被 R2-P2 / ADR-14 修订：SQL 实为 XOR「恰好一个主属主」，并新增 `measure_type` 语义 CHECK**〕；另设 `action_measure_link` 承载 **0..N 附加属主**（R1 的「多个属主 M:N」表述已作废），并纳入多态自检 |
 | 6 | `object_dimension_tag` 值类型约束 | 仅 `dimension` CHECK，`value_type` 无约束、REF/FREE_TEXT 可乱填 | `CHECK(value_type IN ('REF','FREE_TEXT'))` + `CHECK((value_type='REF' AND value_id IS NOT NULL AND value_text IS NULL) OR (value_type='FREE_TEXT' AND value_text IS NOT NULL AND value_id IS NULL))` |
 | 7 | `entity_identifier` 唯一范围 | `UNIQUE(id_type,identifier)` 全局唯一，不同来源系统同号即冲突 | 改 `UNIQUE(entity_id, id_type, COALESCE(source_from,''), identifier)`（同一实体/类型/来源下唯一），另建 `(id_type,identifier)` 非唯一检索索引；跨实体同号由业务校验 |
 | 8 | `drawing_no` 唯一范围 | 全局 `UNIQUE(drawing_no)`，不同项目同图号冲突 | 改 `UNIQUE(project_id, drawing_no)`；project_id 可空时用 `COALESCE(project_id,'')` 表达式唯一索引，保证「按项目约束」 |
-| 9 | 多态引用完整性策略 | 仅文字说明「应用层兜底」，无可执行检查 | 新增 `sp_check_polymorphic_refs` 自检策略（一组 UNION 查询，覆盖 `source_reference`/`object_link`/`evidence_link`/`decision_link`/`action_measure_link`/`review_result_object`/`business_subject_alias`/`object_dimension_tag`），按 type 分派到目标表查孤儿；定义摄入后 + 定期运行，结果写 `audit_log` |
+| 9 | 多态引用完整性策略 | 仅文字说明「应用层兜底」，无可执行检查 | 新增 `check_polymorphic_refs` 自检策略（一组 UNION 查询，覆盖 `source_reference`/`object_link`/`evidence_link`/`decision_link`/`action_measure_link`/`review_result_object`/`business_subject_alias`/`object_dimension_tag`），按 type 分派到目标表查孤儿；定义摄入后 + 定期运行，结果写 `audit_log` |
 | 10 | 公共字段规范 | 各表不齐（多数表缺 `updated_at/created_by/updated_by/info_nature/del_status`） | 定义**基线 A（完整，正式业务表）**：`id, project_id, info_nature, created_at, updated_at, created_by, updated_by, is_deleted, deleted_at, del_status`；**基线 B（精简，辅助/日志/关联表）**：`id, created_at, is_deleted`；逐表在《核心实体数据字典》§0 标注所用基线，SQL 严格对应 |
 
 ### 6.2 三方一致性规则（写入验收）
@@ -288,7 +292,7 @@ CREATE VIRTUAL TABLE issue_fts USING fts5(
 - AI 预测版本（`is_forecast=1`, `info_nature=PREDICTION`）不能成为批准基线，已由 §8-C 追加实测确认。
 - **统计口径实测踩坑**：必须用 `PRAGMA table_list` 区分 `table/virtual/shadow/view` 并排除 `sqlite_schema`；FTS5 影子表与 `sqlite_autoindex_*` 自动索引属内部对象，不计入表数 / 显式索引数；用 `sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'` 会误计影子表、漏计自动索引。
 - **FK 不可后补**：SQLite 不支持 `ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY`（实测报 `near "FOREIGN": syntax error`），FK 必须在 `CREATE TABLE` 内联声明；连接建立后建议追加 `PRAGMA foreign_key_check` 启动自检。两个验证任务均独立复现该结论。
-- **实现期建议（未纳入本轮 DDL）**：为 `business_subject_merge` 增加合并守卫触发器（禁止自合并 / 目标不存在 / 合并到已合并主体），并为权威根解析提供视图；独立验证任务实测该守卫能拦截非法合并链。本轮为避免改变 §0.2 的「触发器 96 / 视图 0」统计口径未纳入，列入后续实现评审。
+- **〔本结论已被 R2-P7 / ADR-18 修订：合并守卫已纳入 R2 DDL，触发器口径 126〕** 实现期建议（R1 时点未纳入本轮 DDL）：为 `business_subject_merge` 增加合并守卫触发器（禁止自合并 / 目标不存在 / 合并到已合并主体），并为权威根解析提供视图；独立验证任务实测该守卫能拦截非法合并链。本轮为避免改变 §0.2 的「触发器 96 / 视图 0」统计口径未纳入，列入后续实现评审。
 
 ### 7.4 验证边界
 
@@ -309,7 +313,7 @@ CREATE VIRTUAL TABLE issue_fts USING fts5(
 | `PRAGMA foreign_key_check` | 无违规 |
 | `PRAGMA integrity_check` | `ok` |
 
-> 该验证只编译文档中给出的模板与显式对象，故 FTS 虚表 1、触发器 8 与 §0.2 的 24 / 96 不同（后者为迁移脚本按 §7.2 清单循环生成后的数量）。结果同时印证统计口径：须用 `pragma_table_list` 区分 `shadow` 影子表与 `sql IS NULL` 自动索引，否则会误计。
+> 该验证只编译文档中给出的模板与显式对象，故 FTS 虚表 1、触发器 8 与 §0.2 的 24 / 96 不同（后者为迁移脚本按 §7.2 清单循环生成后的数量）。〔**R2 复核：显式口径已变为 2 虚表 / 19 触发器，生成后口径 24 / 126；统计还须用 `name NOT LIKE 'sqlite_%'` 排除 `sqlite_schema` 与 `sqlite_temp_schema` 两张系统目录表，见真值源 §8-I**〕结果同时印证统计口径：须用 `pragma_table_list` 区分 `shadow` 影子表与 `sql IS NULL` 自动索引，否则会误计。
 > 附带发现（核验脚本陷阱，非 DDL 缺陷）：保留整行 SQL 注释会使「注释 + `CREATE TABLE`」合并成一条语句，导致 21 张表被漏分类、索引因表不存在报错；剥离整行注释后全量通过。
 
 ---
@@ -323,7 +327,7 @@ CREATE VIRTUAL TABLE issue_fts USING fts5(
 | 3 | G5 六层信息性质一致性 | ✅ 明确各表默认 `info_nature`：`source_reference`=SOURCE_FACT、`extraction_result`=AI_INFERENCE、`plan_version(is_forecast=1)`=PREDICTION、AI 提案=PROPOSAL、`review_decision`/正式对象=CONFIRMED_FACT、`decision`=DECISION；转换只允许人工确认 |
 | 4 | G6 是否覆盖全部承载内容文本表 | ✅ §3.3 24 张 FTS 一一对应；无遗漏的文本表在《数据字典》§0 列出「不建 FTS」理由（纯数值/JSON 元数据表） |
 | 5 | 软删除/归档/物理删除一致规则 | ✅ 三态（ACTIVE/ARCHIVED/DELETED）+ `is_deleted`/`deleted_at`；正式表禁物理删除触发器清单；仅临时/缓存表允许物理删除；FTS 软删镜像规则见 §3.4 |
-| 6 | 外键约束是否完整 | ✅ 硬 FK 全部显式；新增 department、entity 两处 FK；多态字段以 `sp_check_polymorphic_refs` 自检 + 应用层 + 审计补偿（并明确这是**已知取舍**，不伪装成硬约束） |
+| 6 | 外键约束是否完整 | ✅ 硬 FK 全部显式；新增 department、entity 两处 FK；多态字段以 `check_polymorphic_refs` 自检 + 应用层 + 审计补偿（并明确这是**已知取舍**，不伪装成硬约束） |
 | 7 | `PRAGMA foreign_keys` 每个连接启用 | ✅ 实测确认：SQLite 该 PRAGMA **按连接生效**，Python `sqlite3.connect()` 后必须逐连接执行；写入连接规范与迁移脚本首行（详见《数据库表结构设计》§0） |
 | 8 | UUID 统一生成与校验 | ✅ `uuid4().hex`（32 位小写十六进制）；DB 层 `CHECK(length(id)=32 AND id NOT GLOB '*[^0-9a-f]*')`；应用层统一 `new_uuid()`；禁止用文件名/姓名/项目名作主键 |
 | 9 | 迁移幂等性含结构一致性检查 | ✅ 不只 `IF NOT EXISTS`：还需 `PRAGMA table_info` 逐列比对、索引/触发器清单比对、`schema_version` 登记、单事务失败回滚、FTS 重建与一致性自检 |

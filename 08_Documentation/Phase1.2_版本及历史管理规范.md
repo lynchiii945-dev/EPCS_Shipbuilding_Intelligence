@@ -1,6 +1,10 @@
 # Phase1.2 版本及历史管理规范
 
-> R1 整改同步：2026-11-12，以《Phase1.2_数据库表结构设计.md》(R1) 为唯一真值源
+> **版本：R2**（Phase 1.2 复审「数据模型完整性与证据追溯」定向整改后）｜日期：2026-11-12
+> **R2 承接说明**：本文件已按 R2 复审结论同步修订，唯一真值源为《Phase1.2_数据库表结构设计.md》(**R2**)；统一统计口径 **实体表 75 / FTS5 虚表 24 / 触发器 126 / 视图 0**（R1 的「触发器 96」已作废）。R2 仅针对 7 项阻断（P1~P7）+ 4 项实现边界（B1~B4）定向整改，不全面重做 Phase 1.2。
+> **命名声明（P6）**：`check_polymorphic_refs` 是**应用层执行的一组 SQL 自检语句集**，SQLite **没有原生存储过程**、不能 `CALL`；R1 的 `sp_` 前缀命名已全文废弃，全文统一为新名。
+
+> R1 整改同步：2026-11-12（**R1 时点历史记录**）；当前唯一真值源为《Phase1.2_数据库表结构设计.md》(**R2**)，统计口径见上方「R2 承接说明」。
 > 落实 G4（版本化）、B.7（基线只读）、问题 9（完整历史）。本规范定义：版本容器、只读基线、软删除/归档/物理删除三层语义、状态机历史、历史回放。
 
 ---
@@ -22,7 +26,7 @@
 
 **「文件/计划版本」与「业务事项版本」区分（R1-2 / 补充 ADR-9）**：
 - **文件/计划版本**：`document_version` / `drawing_version` / `plan_version` / `plan_activity_version` / `knowledge_version` / `meeting_minutes` 六类，以「主表 + 版本快照表」逐版本留存，`version_no` 递增、只增不改；**FTS 索引全部历史版本**（每个版本一行，`biz_id`=版本 UUID、`owner_biz_id`=主表 UUID），**不是仅当前版本**（对应 24 张 FTS 中的历史版本表，见《表结构设计》§7.2）。
-- **业务事项版本**：Issue/Risk/Task/Decision/KnowledgeItem 不另设版本表，其"版本/历史"由 `business_subject`（统一事项主档 + `canonical_subject_id` 指针）+ `*_status_history`（状态历史）+ `business_subject_merge`（**可逆合并**，`undone_at / undone_by / undo_reason / is_active=0`）三者共同承载。
+- **业务事项版本**：Issue/Risk/Task/Decision/KnowledgeItem 不另设版本表，其"版本/历史"由 `business_subject`（统一事项主档 + `canonical_subject_id` 指针）+ `*_status_history`（状态历史）+ `business_subject_merge`（**可逆合并**，`undone_at / undone_by / undo_reason / is_active=0`）三者共同承载。**R2-P7**：`business_subject_merge` 已补数据库级守卫——部分唯一索引 `uq_bsm_active_from` + 4 个触发器（目标必须为 ACTIVE 有效根 / 禁止循环与多级链 / 禁止多目标 / 撤销必须填齐 `undone_at`·`undone_by`·`undo_reason` 且禁止篡改 `from`·`to` / 撤销时由 `AFTER UPDATE` 触发器原子恢复 `status='ACTIVE'` 与 `canonical_subject_id=NULL`），修复 R1「撤销后状态仍为 MERGED、canonical 仍指向已撤销主体」的缺陷（真值源 §4 / ADR-18）。
 - **基线切换历史**：`baseline_switch_log` 记录每次 from/to、授权人、时间、理由、`audit_log_id`；`plan_active_baseline` 为当前生效指针。
 
 ## 1. 版本化统一原则（精要）
@@ -96,7 +100,7 @@
 ### 3.1 FTS 索引的删除语义（R1-3 补充）
 - **软删保留 FTS 行**：软删时同步触发器只把 FTS 行的 `is_deleted` 镜像置 1，**不物理删除 FTS 行**（避免误删历史版本索引）；所有检索统一带 `AND is_deleted=0` 并 JOIN 业务表二次过滤。
 - **归档（ARCHIVED）不改动 FTS**：归档仅改业务表 `del_status`，FTS 行保持 `is_deleted=0`，仍可被检索。
-- **正式表禁物理删除触发器覆盖 20 张**：`project, project_phase, organization, person, plan, plan_version, email, document, drawing, meeting, message, issue, risk, task, decision, action_measure, entity, business_subject, knowledge_item, evidence`；`baseline_version` 与 `extraction_result` 各用**专用保护触发器**（`trg_bl_freeze_d` / `trg_er_immutable_d`），不重复计入。正式表物理删除被拦截时，`AFTER DELETE` FTS 同步触发器不会触发。
+- **正式表禁物理删除触发器覆盖 20 张**：`project, project_phase, organization, person, plan, plan_version, email, document, drawing, meeting, message, issue, risk, task, decision, action_measure, entity, business_subject, knowledge_item, evidence`；`baseline_version` 与 `extraction_result` 各用**专用保护触发器**（`trg_bl_freeze_d` / `trg_er_immutable_d`），不重复计入。正式表物理删除被拦截时，`AFTER DELETE` FTS 同步触发器不会触发。**R2-P5 另新增 24 个 `trg_<表>_id_immutable` 触发器**（`BEFORE UPDATE OF id` → `RAISE(ABORT,'business primary key id immutable')`；版本表同时覆盖归属外键列），保证业务主键与 `owner_biz_id` 来源不可变、FTS 行不漂移；版本表 `owner_biz_id` 取归属外键而非恒 `NULL`（真值源 §7.3 / §7.7）。
 - 软删 FTS 行「保留 + 过滤」的最终取舍仍列为待确认 N4。
 
 ---
@@ -134,13 +138,35 @@
 
 ---
 
-## R1 整改同步说明
+## R1 整改同步说明（R1 时点记录；统计口径已按 R2 同步为 126）
 
 本轮依据《Phase1.2_数据库表结构设计.md》(R1，唯一真值源) 与《Phase1.2_架构评审整改记录.md》(R1) 做定向修订：
 
-- **统一统计口径**：实体表 **75**（业务主表 46 + 辅助 29）、FTS5 虚拟表 **24**、触发器 **96**、视图 **0**。
+- **统一统计口径**：实体表 **75**（业务主表 46 + 辅助 29）、FTS5 虚拟表 **24**、触发器 **126**、视图 **0**。
 - **§1 补齐版本对象表**：新增 `plan_activity_version`（`change_type` ADDED/MODIFIED/UNCHANGED/REMOVED）、`meeting_minutes` 版本、`baseline_switch_log`；明确 `document_version` / `drawing_version` / `knowledge_version` 等**索引全部历史版本**（非仅当前版本）；区分「文件/计划版本」与「业务事项版本」（后者由 `business_subject` + 状态历史 + 可逆合并承载）。
 - **§2 整段作废重写（R1-1/R1-2）**：删除 `UNIQUE(plan_id,is_active)` 与 `is_active` 字段；新增 `plan_active_baseline` 状态分离 + `baseline_switch_log` 切换全历史；`trg_bl_freeze_u/d` 无差别全字段冻结；切换为应用层单事务、全程不触碰 `baseline_version`；AI 仅允许 INSERT `plan_version(is_forecast=1)`；补六个基线测试案例（全 PASS）与 `baseline → plan_version → plan_activity_version` 回放、V1/V2 差异对比。
 - **§3 补充**：FTS 软删规则（保留 FTS 行、仅置 `is_deleted` 镜像、`AND is_deleted=0` + JOIN 二次过滤；归档不改动 FTS）、正式表禁物理删除触发器覆盖 20 张（`baseline_version` / `extraction_result` 各用专用触发器）。
 - **§6 补充**：R1 新增待确认 N1/N2、N3~N5、N10 的索引说明。
 - **边界**：本阶段未创建/执行任何 SQL 迁移、未改数据库、未装 SDK、未接入外部渠道、未读取真实邮件或旧知识库数据；当前状态为等待系统架构师再次审核。
+
+---
+
+## R2 定向整改对齐（P1~P7 / B1~B4）
+
+> 本节为 R2 复审「数据模型完整性与证据追溯」定向整改的对齐说明；DDL / 约束 / 正反向用例以《Phase1.2_数据库表结构设计.md》(**R2**) 为唯一真值源，四条独立 ADR 条目见《Phase1.2_架构决策记录.md》ADR-14 / 15 / 17 / 18。
+
+| 项 | R2 结论（一句话） | 依据 |
+|---|---|---|
+| **P1** | 计划域 4 类对象由 `UNIQUE(plan_id,id)` 复合唯一键 + 共享 `plan_id` 的复合外键保证同计划，不靠应用层约定 | 真值源 §2 / ADR-13 |
+| **P2** | `action_measure` = **恰好一个主属主 + 0..N 附加属主**；新增 `measure_type` 语义 CHECK；link 孤儿由 P6 `q7` 必然检出（非硬 FK） | 真值源 §4 / §7.6.2 / §7.6.3 / ADR-14 |
+| **P3** | 所有审核决定（含 REJECT）证据 `NOT NULL` + FK + 2 触发器，**无例外审核类型** | 真值源 §6 / ADR-15 |
+| **P4** | 保留 Entity / BusinessSubject 双层结构；`review_result_object.ENTITY` 明确为合法类型并纳入 P6 `q8` | 追溯规范 §1 / ADR-16 |
+| **P5** | FTS **方案 A** 全量重建（含软删）+ **24 个 ID/归属不可变触发器** + 版本表 `owner_biz_id` 变体 | 真值源 §7.3 / §7.6.1 / §7.7 / ADR-17 |
+| **P6** | `check_polymorphic_refs` 改名并声明**非存储过程**；8 类 / 10 分支 / `target` 23 类全集 / `IS NULL` 反连接 / 双向验证 | 真值源 §7.6.2 / ADR-16 |
+| **P7** | 部分唯一索引 + 4 触发器实现有效合并链唯一性、目标必须为有效根、撤销时状态原子恢复 | 真值源 §4 / §7.6.3 / ADR-18 |
+| **B1~B4** | 24 行映射生成规则 + 生成结果核验；`biz_id` 唯一由主表主键 + 三向触发器保证；多态 / 可选 FK 逐字段裁定；人员 ID 统一 `person.id` | 真值源 §7.7 / §12.2 / ADR-19 |
+
+> **统一统计口径**：实体表 **75** / FTS5 虚表 **24** / 触发器 **126** / 视图 **0**（R1 的 96 已作废）。
+> **验证依据**：SQLite 3.53.1 `:memory:` 内存库自检 **129 项 PASS / 0 FAIL**；按文档原文提取的 **133 条 `CREATE`** 全部编译通过、执行失败 0、`foreign_key_check` 无违规、`integrity_check = ok`。
+> 逐项「问题 → 决策 → DDL → 正向测试 → 反向测试 → 影响文档」见《Phase1.2_R2_架构评审整改记录.md》；总览、七项复核表、边界声明与待审核声明见《Phase1.2_R2_架构评审整改完成报告.md》。
+> 本阶段**未创建** `001_init.sql`、未对正式库执行 DDL/DML、未导入资料、未执行 git commit；当前状态：**R2 定向整改完成，等待系统架构师再次审核**。

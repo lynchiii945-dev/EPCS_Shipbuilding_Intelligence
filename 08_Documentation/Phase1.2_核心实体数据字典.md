@@ -1,7 +1,10 @@
 # Phase1.2 核心实体数据字典
 
-> 版本：R1（架构评审整改后）｜日期：2026-11-12
-> R1 整改同步：2026-11-12，以《Phase1.2_数据库表结构设计.md》(R1) 为唯一真值源
+> **版本：R2**（Phase 1.2 复审「数据模型完整性与证据追溯」定向整改后）｜日期：2026-11-12
+> **R2 承接说明**：本文件已按 R2 复审结论同步修订，唯一真值源为《Phase1.2_数据库表结构设计.md》(**R2**)；统一统计口径 **实体表 75 / FTS5 虚表 24 / 触发器 126 / 视图 0**（R1 的「触发器 96」已作废）。R2 仅针对 7 项阻断（P1~P7）+ 4 项实现边界（B1~B4）定向整改，不全面重做 Phase 1.2。
+> **命名声明（P6）**：`check_polymorphic_refs` 是**应用层执行的一组 SQL 自检语句集**，SQLite **没有原生存储过程**、不能 `CALL`；R1 的 `sp_` 前缀命名已全文废弃，全文统一为新名。
+
+> R1 整改同步：2026-11-12（**R1 时点历史记录**）；当前唯一真值源为《Phase1.2_数据库表结构设计.md》(**R2**)，统计口径见上方「R2 承接说明」。
 > 表名/字段名全英文 snake_case；说明文字中文。公共字段基线 A/B 见 §0.2，下文逐表标注所用基线；与《数据库表结构设计》的 CREATE TABLE 一一对应。
 > 所有"值类"枚举（维度、性质、状态）一律用 `dimension` / `CHECK` / `system_config` 归口，禁止硬编码字面值（G7）。
 
@@ -17,7 +20,7 @@
 | 实体表（辅助 / 关联 / 桥 / 历史 / 治理，清单 B） | **29** | 含 `schema_version` 元信息表 1 张 |
 | 实体表合计 | **75** | `CREATE TABLE`，不含 `CREATE VIRTUAL TABLE` |
 | FTS5 虚拟表 | **24** | `tokenize='trigram'`，一一对应见 §7.2 |
-| 触发器 | **96** | FTS 同步 72 + 基线冻结 2 + 抽取不可变 2 + 禁物理删除 20 |
+| 触发器 | **126** | R1 的 96（FTS 同步 72 + 基线冻结 2 + 抽取不可变 2 + 禁物理删除 20）＋ **R2 新增 30**：业务主键/归属不可变 24（P5）＋ 审核证据校验 2（P3）＋ 可逆合并链守卫与联动 4（P7） |
 | 视图 | **0** | 第一期不引入 |
 
 > 统计口径：实体表 = `CREATE TABLE`；FTS 表 = `CREATE VIRTUAL TABLE ... USING fts5`；触发器 = `CREATE TRIGGER`（FTS 同步触发器按 24×3 计入）。唯一索引 / 普通索引清单见《表结构设计》§9。
@@ -44,7 +47,8 @@ created_at    TEXT NOT NULL
 is_deleted    INTEGER NOT NULL DEFAULT 0
 ```
 
-- **UUID 规则**：`uuid4().hex`（32 位小写十六进制），DB 层 `CHECK` 实测生效；禁止用文件名 / 姓名 / 项目名作主键。
+- **UUID 规则**：`uuid4().hex`（32 位小写十六进制）；**禁止**用文件名 / 姓名 / 项目名作主键。
+- **R2-B4 精确化（QA 阶段 B 补强核验 S5-2）**：上方基线 A/B 的 `id ... CHECK(...)` 是**字段基线范式的规范写法**；当前数据库级 CHECK 显式声明于 `project` / `entity` / `person` 三张表（真值源 §1 / §0.3，§8 G8 实测），其中 `person` 由 R2-B4 补齐作为人员 ID 锚点。其余表由应用层 `uuid4().hex` + §7.6.3 B4 格式自检 + 迁移阶段 `PRAGMA table_info` / `ddl_fingerprint` 结构一致性检查兜底；全表 CHECK 覆盖列入 Phase 1.3 迁移前复核（见《Phase1.2_R2_架构评审整改完成报告.md》§8 遗留事项）。**下文各表「主键 `id`（TEXT UUID，CHECK 32 位小写 hex）」为字段基线规范描述，不代表该表 DDL 已逐表声明 CHECK**；此处如实澄清，不作「全库 CHECK 已生效」的不实结论。
 - **时间字段**：`event_time` / `source_time` / `created_at` / `updated_at` / `valid_from` / `valid_to` 严格区分，均为 ISO8601 UTC 文本。
 - **逐表标注**：下文每张表标题后的 `［基线A］` / `［基线B］` 即该表所用公共字段集，与《表结构设计》各 DDL 行尾 `-- 基线A` / `-- 基线B` 注释一一对应。
 - **两个维度须分清**：§0.3 的「清单 A / 清单 B」是**对象分类**（业务主表 / 辅助·关联·桥·历史·治理表）；§0.2 的「基线 A / 基线 B」是**公共字段集合**，二者是不同维度。例如 `review_queue` / `review_decision` / `review_result_object` / `object_dimension_tag` / `progress_record` 属清单 B 分类，但 DDL 用基线 A 字段集；`email_attachment` / `drawing_object` / `ingestion_job` / `ai_analysis_run` / `extraction_result` 属清单 A 分类，但 DDL 用基线 B 字段集。一律以 SQL DDL 实测标注为准。
@@ -88,7 +92,7 @@ is_deleted    INTEGER NOT NULL DEFAULT 0
 |---|---|---|---|
 | 结构一致性 / 指纹 / 哈希 | `schema_version`、`plan_version`、`baseline_version`、`document`、`drawing`、`document_version`、`drawing_version`、`email_attachment` | `ddl_fingerprint`、`content_hash`、`sha256`、`snapshot_json` | 哈希 / 指纹 / JSON 快照为机器比对用，非自然语言检索对象；`plan_version.snapshot_json` 的活动集已由 `plan_activity_version_fts` 覆盖 |
 | 授权与切换审计 | `plan_active_baseline`、`baseline_switch_log`、`audit_log` | `authorization_ref`、`reason`、`before_json` / `after_json` | 审计 / 授权字段短且按 `target_type+target_id` 精确查询，走普通索引 `idx_audit_target` / `idx_bsl_plan` |
-| 纯 FK 组合 / 关联桥 | `project_member`、`project_discipline` / `project_area` / `project_system` / `project_equipment`、`activity_dependency`、`evidence_link` / `decision_link` / `action_measure_link` / `knowledge_entity_link` / `business_subject_source` / `review_extraction_link` / `user_role` / `role_permission` | 纯 `*_id` 组合 + `relation_type` / `link_role` | 无自由文本；完整性由 `UNIQUE` / 硬 FK / `sp_check_polymorphic_refs` 自检保证 |
+| 纯 FK 组合 / 关联桥 | `project_member`、`project_discipline` / `project_area` / `project_system` / `project_equipment`、`activity_dependency`、`evidence_link` / `decision_link` / `action_measure_link` / `knowledge_entity_link` / `business_subject_source` / `review_extraction_link` / `user_role` / `role_permission` | 纯 `*_id` 组合 + `relation_type` / `link_role` | 无自由文本；完整性由 `UNIQUE` / 硬 FK / `check_polymorphic_refs` 自检保证 |
 | 数值 / 状态历史 | `progress_record`、`issue_status_history` / `risk_status_history` / `task_status_history` | `progress_pct`、`old_status` / `new_status` / `transition`、`reopen_count` | 数值与状态机枚举，按时间线精确查询；`reason` 短文本由应用层展示，不进全文索引 |
 | 维度 / 标签 / 占位 | `object_dimension_tag`、`drawing_object`、`discipline` / `area` / `system` / `equipment_category` | `dimension` / `value_id` / `value_text`、`geometry_json` / `reserved_data`、`code` / `name` | 维度值由 `CHECK` + 精确索引 `idx_odt_obj/dim` 查询；`drawing_object` 为 ADR-10 预留占位不解析 |
 | 运行日志 / 配置 / 骨架 | `ingestion_job`、`ai_analysis_run`、`system_config`、`user` / `role` / `permission` | `run_meta`、`output_summary`、`config_key` / `config_value`、`username` / `role_code` | 运行态日志与配置项按 key / 状态精确查询，无全文检索需求 |
@@ -157,7 +161,7 @@ is_deleted    INTEGER NOT NULL DEFAULT 0
 ### 1.5 `person` 人员 ［基线A］
 | 字段 | 类型 | 必填 | 默认 | 说明 |
 |---|---|---|---|---|
-| id | char(32) | Y | — | UUID |
+| id | char(32) | Y | — | UUID；**R2-B4：`CHECK(length(id)=32 AND id NOT GLOB '*[^0-9a-f]*')`**（人员 ID 锚点，QA 阶段 B S5-2 补齐） |
 | organization_id | char(32) | Y | — | FK→organization |
 | department_id | char(32) | N | — | FK→department（R1-6 新增，可空） |
 | name | text | Y | — | 姓名 |
@@ -230,7 +234,10 @@ is_deleted    INTEGER NOT NULL DEFAULT 0
 
 ---
 
-## 2. 域2 —— 计划管理（R1-1 基线只读 + R1-2 活动版本化）
+## 2. 域2 —— 计划管理（R1-1 基线只读 + R1-2 活动版本化；R2-P1 跨计划一致性）
+
+> **R2-P1 同计划保证（字典口径）**：`plan_version` / `plan_activity` / `baseline_version` 各增 `UNIQUE(plan_id, id)` 复合唯一键；7 张表用**共享 `plan_id` 的复合外键**保证对象同属一个计划：`plan_activity_version`（**新增 `plan_id` 列**，2 个复合 FK）、`activity_dependency`（3 个）、`baseline_version`（1 个）、`plan_active_baseline`（1 个）、`plan_activity.first_version_id`（1 个）、`progress_record`（**新增 `plan_id` 列**，2 个）、`baseline_switch_log`（2 个）。可空引用（`first_version_id` / `from_baseline_id` / `progress_record.plan_version_id`）为 NULL 时按 SQLite MATCH SIMPLE 跳过该 FK 检查，非空时必须同计划。反向测试「A 计划活动挂到 B 计划版本」「A 计划基线指向 B 计划版本」全部被数据库拒绝，见《数据库表结构设计》§2 / §12-P1。
+> **R2-B3/B4 人员口径**：`baseline_version.approved_by`、`plan_active_baseline.switched_by`、`baseline_switch_log.switched_by` 均补 `REFERENCES person(id)`，与其它 `*_person_id` / `*_by` 字段统一为 `person.id` 的 32 位小写 hex UUID。
 
 ### 2.1 `plan` 计划 ［基线A］
 | 字段 | 类型 | 必填 | 默认 | 说明 |
@@ -309,7 +316,7 @@ is_deleted    INTEGER NOT NULL DEFAULT 0
 |---|---|
 | 用途 | 记录每一次基线切换的**全历史**（来源、目标、授权人、时间、理由、审计挂接） |
 | 主键 | `id`（TEXT UUID，CHECK 32 位小写 hex） |
-| 外键 | `plan_id TEXT NOT NULL REFERENCES plan(id)`、`to_baseline_id TEXT NOT NULL REFERENCES baseline_version(id)`；`from_baseline_id` 可空（首次切换）；`audit_log_id` 无硬 FK（回指 `audit_log`） |
+| 外键（**R2-B3 补齐，R1 表述已修订**） | `plan_id→plan(id)`；`to_baseline_id` / `from_baseline_id` 均经 `(plan_id, 基线id)` **复合 FK → `baseline_version(plan_id,id)`**（from 可空，NULL 跳过该检查）；`audit_log_id REFERENCES audit_log(id)`（R1 写「无硬 FK」属遗漏，已补）；`switched_by REFERENCES person(id)`（R2-B4 统一人员 ID）。复合 FK 同时保证切换日志不跨计划（R2-P1） |
 | 关键字段 | `switched_at TEXT NOT NULL`、`switched_by TEXT NOT NULL`、`authorization_ref TEXT NOT NULL`、`reason` |
 | 唯一约束/索引 | `idx_bsl_plan(plan_id, switched_at)`（普通索引，按时间线回放） |
 | info_nature 默认 | 无该列（基线 B） |
@@ -441,11 +448,11 @@ is_deleted    INTEGER NOT NULL DEFAULT 0
 | **索引** | | | | `idx_sr_entity(traced_entity_type, traced_entity_id)`；`idx_sr_source(source_type, source_id)` |
 
 > 基线 A；FTS：`source_reference_fts`（§7.2 #11，context_excerpt / locator / 当前）；禁物理删除触发器：否。
-> **已知取舍**：`type + id` 多态无硬 FK，完整性由 `sp_check_polymorphic_refs` 自检 + 应用层 + 审计三层补偿（《表结构设计》§7.6），不伪装成数据库硬约束。
+> **已知取舍**：`type + id` 多态无硬 FK，完整性由 `check_polymorphic_refs` 自检 + 应用层 + 审计三层补偿（《表结构设计》§7.6），不伪装成数据库硬约束。
 
 ### 3.8 `evidence` / `evidence_link` 证据
 - `evidence` ［基线A］：id, project_id, title, `body`, `evidence_kind`(片段/附件/截图), sha256, `info_nature='SOURCE_FACT'`；FTS `evidence_fts`（§7.2 #10，title / body / 当前）；禁物理删除触发器：是。
-- `evidence_link` ［基线B］：id, `evidence_id FK`, `ref_type` / `ref_id`（多态，无硬 FK）, `link_role`(佐证/反证/依据), `context_excerpt`；`idx_el_ref(ref_type, ref_id)`；FTS：不建；纳入 `sp_check_polymorphic_refs` 自检。
+- `evidence_link` ［基线B］：id, `evidence_id FK`, `ref_type` / `ref_id`（多态，无硬 FK）, `link_role`(佐证/反证/依据), `context_excerpt`；`idx_el_ref(ref_type, ref_id)`；FTS：不建；纳入 `check_polymorphic_refs` 自检。
 
 ---
 
@@ -480,7 +487,7 @@ is_deleted    INTEGER NOT NULL DEFAULT 0
 | info_nature 默认 | `CONFIRMED_FACT` |
 | 公共字段基线 | **基线 A** |
 | FTS | **建** `business_subject_alias_fts`（§7.2 #19，alias / 当前）；与 `entity_alias_fts` 一起作为 trigram 短词 LIKE 回退的别名召回源 |
-| 禁物理删除 | 否；纳入 `sp_check_polymorphic_refs` 自检 |
+| 禁物理删除 | 否；纳入 `check_polymorphic_refs` 自检 |
 
 #### 4.1.3 `business_subject_merge` 可逆事项合并链 ［基线A］
 | 项 | 内容 |
@@ -488,14 +495,15 @@ is_deleted    INTEGER NOT NULL DEFAULT 0
 | 用途 | **业务事项合并的唯一表达**（Issue→Issue 等）；支持撤销错误合并，不物理删除任何记录 |
 | 主键 | `id`（TEXT UUID） |
 | 外键 | `from_subject_id TEXT NOT NULL REFERENCES business_subject(id)`、`to_subject_id TEXT NOT NULL REFERENCES business_subject(id)`；`source_reference_id TEXT REFERENCES source_reference(id)` |
-| 关键字段 | `merged_at TEXT NOT NULL`、`merged_by TEXT NOT NULL`、`reason`；**撤销四字段** `undone_at` / `undone_by` / `undo_reason` / `is_active INTEGER NOT NULL DEFAULT 1` |
-| 唯一约束/索引 | `CHECK(from_subject_id <> to_subject_id)` |
+| 关键字段 | `merged_at TEXT NOT NULL`、`merged_by TEXT REFERENCES person(id)`（**R2-B4：由 R1 的 `NOT NULL` 文本改为可空人员 FK，NULL = SYSTEM/AI 执行且须写 `audit_log`**）、`reason`；**撤销四字段** `undone_at` / `undone_by TEXT REFERENCES person(id)` / `undo_reason` / `is_active INTEGER NOT NULL DEFAULT 1` |
+| 唯一约束/索引（**R2-P7 新增**） | `CHECK(from_subject_id <> to_subject_id)`（禁止自合并）＋ `CREATE UNIQUE INDEX uq_bsm_active_from ON business_subject_merge(from_subject_id) WHERE is_active=1`（一个主体只能有一个**有效**合并目标）＋ 4 个触发器 `trg_bsm_guard_i / apply_i / guard_u / apply_u`（守卫 / 合并联动 / 撤销守卫 / 撤销联动），全文见《数据库表结构设计》§4 |
 | info_nature 默认 | `CONFIRMED_FACT` |
 | 公共字段基线 | **基线 A** |
 | FTS | 不建 |
 | 禁物理删除 | 否 |
 
 > **合并 / 撤销语义**：合并时 `from_subject` 及其 `issue` 行**不删除、不覆盖**，仅标 `status='MERGED'` 并保留 `canonical_subject_id` 指向 `to_subject`；撤销时置 `undone_at` / `undone_by` / `undo_reason`、`is_active=0`，`from_subject.status` 由 MERGED 回 ACTIVE、`canonical_subject_id` 清空。历史引用全部可回放。
+> **R2-P7 数据库级保护（R1 只有 CHECK，不设防）**：① 部分唯一索引 `uq_bsm_active_from` 禁止「一个主体同时多个有效合并目标」；② `trg_bsm_guard_i` 要求目标是 **ACTIVE 有效根**，禁止循环（A→B 且 B→A）、禁止合并到已合并主体、禁止多级链（保证 `canonical_subject_id` 恒为根、不会滞后）；③ `trg_bsm_apply_i` 由数据库联动写 `status` / `canonical_subject_id`，不靠应用层；④ `trg_bsm_guard_u` 要求撤销填齐撤销三字段、禁止篡改 `from/to`、禁止复活已撤销行；⑤ `trg_bsm_apply_u` 由数据库联动恢复状态。撤销必须在**应用层单事务**内完成（事务 + 触发器共同实现）；`canonical` 与有效合并关系的一致性另有自检 SQL（《数据库表结构设计》§7.6.3）。正/反向用例见《R2 架构评审整改记录》P7。
 
 #### 4.1.4 `business_subject_source` 事项↔来源证据 M:N ［基线B］
 | 项 | 内容 |
@@ -512,16 +520,16 @@ is_deleted    INTEGER NOT NULL DEFAULT 0
 
 ### 4.2 `issue` 问题 / `issue_status_history` 状态历史
 - `issue` ［基线A］：id, `project_id FK`, **`subject_id TEXT NOT NULL UNIQUE REFERENCES business_subject(id)`（R1-4 新增）**, `ref_no UNIQUE`, title, description_md, status('NEW'), severity, priority, `info_nature='CONFIRMED_FACT'`；`idx_issue_proj(project_id)`、`idx_issue_status(status)`；FTS `issue_fts`（§7.2 #12，ref_no / title / description_md / 当前）；禁物理删除触发器：是。
-- `issue_status_history` ［基线B］：id, `issue_id FK`, old_status / new_status / transition, changed_by, changed_at, reason, reopen_count, info_nature, `source_reference_id FK`；FTS：不建；`info_nature` 本列为可空文本（R1 DDL 未设默认值，由应用层填写）。
+- `issue_status_history` ［基线B］：id, `issue_id FK`, old_status / new_status / transition, **`changed_by REFERENCES person(id)`（R2-B3/B4 补齐；可空 = SYSTEM/AI 执行）**, changed_at, reason, reopen_count, info_nature, `source_reference_id FK`；FTS：不建；`info_nature` 本列为可空文本（R1 DDL 未设默认值，由应用层填写）。
 - 合法状态转移由应用层校验；状态机值见 B.6。
 
 ### 4.3 `risk` / `risk_status_history`
 - `risk` ［基线A］：id, `project_id FK`, **`subject_id TEXT NOT NULL UNIQUE REFERENCES business_subject(id)`**, `ref_no UNIQUE`, title, description_md, probability / impact / exposure, status('NEW'), strategy(规避/转移/缓解/接受), `info_nature='CONFIRMED_FACT'`；`idx_risk_proj(project_id)`；FTS `risk_fts`（§7.2 #13）；禁物理删除触发器：是。
-- `risk_status_history` ［基线B］：同 issue 历史结构，绑定 `risk_id FK`；FTS：不建。
+- `risk_status_history` ［基线B］：同 issue 历史结构（含 **`changed_by REFERENCES person(id)`**，R2-B3/B4 补齐），绑定 `risk_id FK`；FTS：不建。
 
 ### 4.4 `task` / `task_status_history`
 - `task` ［基线A］：id, `project_id FK`, **`subject_id TEXT NOT NULL UNIQUE REFERENCES business_subject(id)`**, `ref_no UNIQUE`, title, description_md, `assignee_person_id FK`, due_at, completed_at, priority, status('NEW'), `info_nature='CONFIRMED_FACT'`；`idx_task_proj(project_id)`；FTS `task_fts`（§7.2 #14）；禁物理删除触发器：是。
-- `task_status_history` ［基线B］：同结构，绑定 `task_id FK`；FTS：不建。
+- `task_status_history` ［基线B］：同结构（含 **`changed_by REFERENCES person(id)`**，R2-B3/B4 补齐），绑定 `task_id FK`；FTS：不建。
 
 ### 4.5 `action_measure` 行动措施（风险应对 & 问题整改 共用） ［基线A］
 | 字段 | 类型 | 必填 | 说明 |
@@ -535,15 +543,16 @@ is_deleted    INTEGER NOT NULL DEFAULT 0
 | issue_id | char(32) | N | **R1-6 新增可空硬 FK** `REFERENCES issue(id)` |
 | due_at / status / info_nature | — | — | 状态默认 'OPEN'；info_nature 默认 `CONFIRMED_FACT` |
 
-> **R1-6 整改（原结论作废）**：原稿 `source_owner_type / source_owner_id` 多态无完整性、`measure_type` 无 CHECK 的说法**作废**。改为两个可空硬 FK + 属主完整性 CHECK：
+> **R2-P2 定案（R1 措辞已修订）**：原稿 `source_owner_type / source_owner_id` 多态无完整性、`measure_type` 无 CHECK 的说法**作废**；R1 报告/字典把本表 CHECK 写成「至少一个属主」、把 `action_measure_link` 写成「一个措施挂多个属主 M:N」，**都与 SQL 的 XOR 冲突**。R2 统一语义：
 > ```sql
 > risk_id  TEXT REFERENCES risk(id),
 > issue_id TEXT REFERENCES issue(id),
 > CHECK((risk_id IS NOT NULL AND issue_id IS NULL) OR (issue_id IS NOT NULL AND risk_id IS NULL))
 > ```
-> 该 CHECK 落实评审「`CHECK((risk_id IS NOT NULL)+(issue_id IS NOT NULL)>=1)` 至少一个属主」的要求，并额外**禁止同时挂两个硬 FK**（多属主走 `action_measure_link` M:N）；索引 `idx_am_risk(risk_id)` / `idx_am_issue(issue_id)`。
+> 即 **恰好一个主属主**（两列恰好一个非空；零个、两个均被拒绝）。其余属主一律经 `action_measure_link` 作 **0..N 附加关联**；该表**不得重复登记主属主**，由《数据库表结构设计》§7.6.3 一致性自检 SQL 检出。索引 `idx_am_risk(risk_id)` / `idx_am_issue(issue_id)`。决策见 ADR-14。
+> **R2-P2 / QA 阶段 A 补充**：新增 `measure_type` 与**唯一主属主**强绑定的语义 CHECK —— `RISK_RESPONSE ⇒ risk_id IS NOT NULL AND issue_id IS NULL`、`ISSUE_REMEDY ⇒ issue_id IS NOT NULL AND risk_id IS NULL`；该 CHECK 蕴含并强化上面的 XOR，杜绝 R1 中「`RISK_RESPONSE` 却挂 `issue_id`」等错挂。`action_measure_link.ref_id` 为多态引用、**无硬 FK**，其孤儿由 P6 `q7` 分支（`target` 23 类全集 + `IS NULL` 反连接）必然检出，配合应用层校验 + `audit_log` 三层补偿，不伪装成数据库硬约束。
 > 基线 A；FTS：`action_measure_fts`（§7.2 #16，ref_no / name / description / 当前）；禁物理删除触发器：是。
-- `action_measure_link` ［基线B］：id, `action_measure_id FK`, `ref_type` / `ref_id`（多态）, `link_role`；支持**一个措施挂多个属主（M:N）**；FTS：不建；纳入 `sp_check_polymorphic_refs` 自检。
+- `action_measure_link` ［基线B］：id, `action_measure_id FK`, `ref_type` / `ref_id`（多态）, `link_role`；承载 **0..N 附加属主**（不是「多个主属主」）；FTS：不建；纳入 `check_polymorphic_refs` 自检与 §7.6.3 主属主重复检测。
 
 ### 4.6 `decision` 决策 / `decision_link` / `object_link`
 - `decision` ［基线A］：id, `project_id FK`, **`subject_id TEXT NOT NULL UNIQUE REFERENCES business_subject(id)`**, `ref_no UNIQUE`, title, `conclusion_md`, `decided_by_person_id FK`, decided_at, status('OPEN'), **`info_nature='DECISION'`**；FTS `decision_fts`（§7.2 #15，ref_no / title / conclusion_md / 当前）；禁物理删除触发器：是。
@@ -558,7 +567,7 @@ is_deleted    INTEGER NOT NULL DEFAULT 0
 | right_type / right_id | text / char | Y | 右侧对象（多态，无硬 FK） |
 | context_excerpt | text | N | 上下文摘录 |
 
-> `info_nature` 默认 `CONFIRMED_FACT`；基线 A；FTS：不建；`idx_ol_left(left_type, left_id)`、`idx_ol_right(right_type, right_id)`；纳入 `sp_check_polymorphic_refs` 自检。
+> `info_nature` 默认 `CONFIRMED_FACT`；基线 A；FTS：不建；`idx_ol_left(left_type, left_id)`、`idx_ol_right(right_type, right_id)`；纳入 `check_polymorphic_refs` 自检。
 > 设计说明：`object_link` 承载 B.3/B.4 与 A.4 的一切业务对象间多对多，避免为每对关系建独立表（ADR-4/ADR-5）。
 
 ---
@@ -663,7 +672,8 @@ is_deleted    INTEGER NOT NULL DEFAULT 0
 |---|---|
 | 用途 | 一个审核任务可产出**多条结果明细**，含审核人 / 时间 / 理由 / 证据 |
 | 主键 | `id`（TEXT UUID） |
-| 外键 | `review_queue_id TEXT NOT NULL REFERENCES review_queue(id)`；`reviewer_person_id TEXT NOT NULL REFERENCES person(id)`；`evidence_source_reference_id TEXT REFERENCES source_reference(id)` |
+| 外键（**R2-P3 修订**） | `review_queue_id TEXT NOT NULL REFERENCES review_queue(id)`；`reviewer_person_id TEXT NOT NULL REFERENCES person(id)`；**`evidence_source_reference_id TEXT NOT NULL REFERENCES source_reference(id)`**（R1 为可空，与「证据必填」文档结论冲突，R2 已补 `NOT NULL` + FK） |
+| R2-P3 触发器 | `trg_rd_evidence_i`（BEFORE INSERT）/ `trg_rd_evidence_u`（BEFORE UPDATE OF evidence_source_reference_id）：校验所引 `source_reference` **存在且未软删**（FK 管存在、触发器管 `is_deleted`），否则 `RAISE(ABORT)`；不设例外审核类型。证据事后被软删的既有决定由 §7.6.3 自检 SQL 检出 |
 | 关键字段 | `decision TEXT NOT NULL CHECK(decision IN ('ACCEPT_AS_NEW','MERGE_TO','REJECT'))`、`reviewed_at TEXT NOT NULL`、`reason TEXT NOT NULL`（REJECT 亦需理由） |
 | 唯一约束/索引 | `idx_rd_queue(review_queue_id)`（普通索引） |
 | info_nature 默认 | **`CONFIRMED_FACT`**（人工确认结果，G5 升级落点） |
@@ -682,7 +692,7 @@ is_deleted    INTEGER NOT NULL DEFAULT 0
 | info_nature 默认 | `CONFIRMED_FACT` |
 | 公共字段基线 | **基线 A** |
 | FTS | 不建（按 `object_type + object_id` 精确映射） |
-| 禁物理删除 | 否；纳入 `sp_check_polymorphic_refs` 自检 |
+| 禁物理删除 | 否；纳入 `check_polymorphic_refs` 自检 |
 
 > 约束补充：「REJECT 却生成 CREATED 对象」由应用层校验；G5 链路 `AI_INFERENCE → review_queue → review_decision(CONFIRMED_FACT) → 正式对象(CONFIRMED_FACT)`，**不得自动升级**。
 
@@ -733,7 +743,7 @@ is_deleted    INTEGER NOT NULL DEFAULT 0
 >    OR (value_type='FREE_TEXT' AND value_text IS NOT NULL AND value_id IS NULL))
 > ```
 > 即 **REF 用 `value_id`、FREE_TEXT 用 `value_text`，二者互斥且不得为空**。
-> `info_nature` 默认 `CONFIRMED_FACT`；基线 A；FTS：不建（维度枚举精确查询）；纳入 `sp_check_polymorphic_refs` 自检。
+> `info_nature` 默认 `CONFIRMED_FACT`；基线 A；FTS：不建（维度枚举精确查询）；纳入 `check_polymorphic_refs` 自检。
 > 该表承载 B.2"阶段+专业/区域/系统可同时多打、可并列/跨阶段"，并兼容"阶段不确定/自由文本"。
 
 ### 7.2 FTS5 统一范式与一一对应清单（24 张）—— **原结论作废，本节整体改写**
@@ -799,27 +809,31 @@ CREATE VIRTUAL TABLE IF NOT EXISTS issue_fts USING fts5(
 > 版本类 FTS（#4/#6/#8/#21/#22）每条版本一行：`biz_id` = 版本 UUID、`owner_biz_id` = 主表 UUID，满足「历史版本检索」；主表另建元数据 FTS，避免把名称重复写进每个版本行。不建 FTS 的纯数值 / JSON 元数据表及理由见 §0.4。
 
 ### 7.3 同步 / 软删 / 一致性要点（详见《表结构设计》§7.3~§7.6）
-- **三向同步触发器**：每张内容表 `AFTER INSERT` / `AFTER UPDATE WHEN 文本或 is_deleted 变化` / `AFTER DELETE` 共 3 个，24×3 = **72** 个；UPDATE 采用「先 `DELETE FROM x_fts WHERE biz_id=old.id` 再 INSERT」避免 trigram 值漂移。
+- **三向同步触发器**：每张内容表 `AFTER INSERT` / `AFTER UPDATE WHEN 文本或 is_deleted 变化` / `AFTER DELETE` 共 3 个，24×3 = **72** 个；UPDATE 采用「先 `DELETE FROM x_fts WHERE biz_id=old.id` 再 INSERT」避免 trigram 值漂移。`WHEN` 在 R2 补 `old.id IS NOT new.id`（版本表另含归属外键变化）作纵深防御。
+- **R2-P5 版本表 `owner_biz_id` 变体**：`VALUES(new.id, NULL, ...)` 的 `NULL` **仅适用于 19 张非版本表**；5 张版本表（`document_version` / `drawing_version` / `meeting_minutes` / `knowledge_version` / `plan_activity_version`）按 §7.7 的 24 行映射表取归属外键列（`document_id` / `drawing_id` / `meeting_id` / `knowledge_item_id` / `activity_id`），同步触发器与方案 A 重建 SQL 均给出可执行变体（真值源 §7.3 / §7.6.1 ⑥）。R1 模板令 `owner_biz_id` 恒 NULL 与 §7.2 声明冲突，已由变体取代。
+- **R2-P5 ID/归属不可变触发器**：24 张内容表各 1 个 `BEFORE UPDATE OF id ... RAISE(ABORT,'business primary key id immutable')`（版本表同时覆盖归属外键列），共 **24 个**，计入触发器总数 126。
 - **软删**：保留 FTS 行，把 `is_deleted` 镜像置 1；查询统一带 `AND is_deleted=0` 并 JOIN 业务表二次过滤；归档（ARCHIVED）不改动 FTS。
-- **重建 / 一致性**：`DELETE FROM x_fts; INSERT INTO x_fts(...) SELECT ... FROM 业务表 WHERE is_deleted=0;`；检查 ①活跃行数差 ②`biz_id` 孤儿 ③软删镜像一致 ④trigram 正向自检（命中 0 时结果不可采信）。
+- **重建 / 一致性（R2-P5 方案 A 修订）**：`DELETE FROM x_fts; INSERT INTO x_fts(...) SELECT ... FROM 业务表;`（**不带 `WHERE is_deleted=0`**，同步含软删的全部记录并保留 `is_deleted` 镜像）；检查 ①**全量**行数差 ②`biz_id` 孤儿 ③软删镜像一致（含软删行）④trigram 正向自检（命中 0 时结果不可采信）⑤重复 `biz_id` 检测（R2-B2）。R1 带 `WHERE is_deleted=0` 的重建 SQL 会清除软删记录、造成重建前后状态不一致，**已作废**；详见《数据库表结构设计》§7.6.1。
 - **中文检索规则**：trigram 以 3 字符滑窗建索引，1~2 字查询词 `MATCH` 恒为 0 → 自动降级 LIKE 回退（限定候选集 + `LIMIT`），并联合 `entity_alias` / `business_subject_alias` 别名召回；含 `-` / `/` 等 FTS5 语法字符的查询词必须整体双引号包裹（`'"' + term.replace('"','""') + '"'`）。测试矩阵见《表结构设计》§7.4。
-- **触发器总数核对**：FTS 同步 72 + 基线冻结 2（§2.3）+ 抽取不可变 2（§6.3）+ 禁物理删除 20（§8）= **96**，与 §0.1 一致。
+- **触发器总数核对（R2）**：FTS 同步 72 + 基线冻结 2（§2.3）+ 抽取不可变 2（§6.3）+ 禁物理删除 20（§8）= 96（R1 口径）＋ R2 新增 30（ID/归属不可变 24 + 审核证据校验 2 + 可逆合并链守卫与联动 4）= **126**，与 §0.1 及《数据库表结构设计》§0.2 一致。
+- **R2-P5 方案 A 重建**：`DELETE FROM x_fts; INSERT INTO x_fts(...) SELECT ... FROM 业务表;`（**不带 `WHERE is_deleted=0`**），同步含软删的全部记录并保留 `is_deleted` 镜像；一致性检查扩为 5 项（全量行数差 / `biz_id` 孤儿 / 软删镜像一致 / trigram 正向自检 / 重复 `biz_id` 检测）。R1 的重建示例带 `WHERE is_deleted=0`，已作废。
+- **R2-P6 命名声明**：`check_polymorphic_refs` 是**应用层执行的一组 SQL 自检语句集**（SQLite 无原生存储过程，不能 `CALL`），R1 的 `sp_` 前缀命名已废弃；完整 8 类 / 10 分支类型映射与 `IS NULL` 反连接 SQL 见《数据库表结构设计》§7.6.2。
 
 ---
 
-## 8. R1 整改同步说明（本次改动点）
+## 8. R1 整改同步说明（R1 时点记录 / 本次改动点；统计口径已按 R2 同步为 126）
 
 | # | 改动点 | 位置 | 对应整改项 |
 |---|---|---|---|
 | 1 | 顶部追加「R1 整改同步」元信息行，声明唯一真值源 | 文首 | 全局 |
-| 2 | 新增 §0「统一口径与全表索引」：统一数量统计（75 / 24 / 96 / 视图 0）、公共字段基线 A/B 定义与逐表标注、75 张表 A(46)/B(29) 清单、SQL↔字典双向对应核对表、不建 FTS 的纯数值/JSON 元数据表清单及理由 | §0.1~§0.4 | R1-6 / 统计统一 |
+| 2 | 新增 §0「统一口径与全表索引」：统一数量统计（R1 口径 75 / 24 / 96 / 视图 0；**R2 已修订为 75 / 24 / 126 / 视图 0**，见 §9）、公共字段基线 A/B 定义与逐表标注、75 张表 A(46)/B(29) 清单、SQL↔字典双向对应核对表、不建 FTS 的纯数值/JSON 元数据表清单及理由 | §0.1~§0.4 | R1-6 / 统计统一 |
 | 3 | §7.2 FTS 章节**整体改写并标注原结论作废**：废弃 `content='issue', content_rowid='id'`（TEXT UUID 不能作整数 rowid，实测压成 rowid 0）；改为普通内容表 + `biz_id` / `owner_biz_id` / `is_deleted UNINDEXED`；补充外部内容表 `count(*)` 与 `integrity-check` 两个陷阱；照抄 24 张一一对应清单 | §7.2 | R1-3 |
 | 4 | 补齐原稿一笔带过 / 缺失的 13 张表逐项说明（用途/主键/外键/关键字段/唯一约束与索引/info_nature 默认/基线 A/B/是否建 FTS）：`department`、`plan_active_baseline`、`baseline_switch_log`、`plan_activity_version`、`business_subject`、`business_subject_alias`、`business_subject_merge`、`business_subject_source`、`review_queue`、`review_extraction_link`、`review_decision`、`review_result_object`、`schema_version` | §1.4 / §2.4 / §2.5 / §2.7 / §4.1 / §6.4~§6.7 / §6.11 | R1-1/2/4/5/6 |
 | 5 | 修正约束表述：`project.main_object_entity_id` 与 `equipment.manufacturer_entity_id` 已显式 `REFERENCES entity(id)`（原「表后置/动态/不建 FK」作废） | §1.1 / §1.9 | R1-6 |
 | 6 | `project_member` 删除表内 UNIQUE，改表达式唯一索引 `uq_pm(... COALESCE(person_id,'') ... COALESCE(valid_from,''))`（原 UNIQUE 因可空列放行重复 NULL 组合） | §1.6 | R1-6 |
 | 7 | `entity_identifier` 唯一范围由全局 `UNIQUE(id_type,identifier)` 改为 `UNIQUE(entity_id,id_type,COALESCE(source_from,''),identifier)` + `(id_type,identifier)` 非唯一检索索引 | §5.3 | R1-6 |
 | 8 | `drawing.drawing_no` 由全局唯一改为按项目 `uq_dr(COALESCE(project_id,''), drawing_no)` | §3.4 | R1-6 |
-| 9 | `action_measure` 增可空 `risk_id` / `issue_id` 两个硬 FK + 属主完整性 CHECK（落实评审 `(risk_id IS NOT NULL)+(issue_id IS NOT NULL)>=1`，SQL 另禁止同时挂两个硬 FK），另设 `action_measure_link` 支持 M:N | §4.5 | R1-6 |
+| 9 | `action_measure` 增可空 `risk_id` / `issue_id` 两个硬 FK + 属主完整性 CHECK（**R1 时点表述**：「落实评审 `(risk_id IS NOT NULL)+(issue_id IS NOT NULL)>=1`，SQL 另禁止同时挂两个硬 FK」，另设 `action_measure_link` 支持 M:N）—— **本结论已被 R2-P2 / ADR-14 修订**：SQL 实为 XOR「恰好一个主属主」，`action_measure_link` 承载 0..N 附加属主，并新增 `measure_type` 语义 CHECK，见 §4.5 / §7.2 | §4.5 / §7.2 | R1-6 / R2-P2 |
 | 10 | `object_dimension_tag` 增 `CHECK(value_type IN ('REF','FREE_TEXT'))` 及 REF 用 `value_id` / FREE_TEXT 用 `value_text` 的互斥约束 | §7.1 | R1-6 |
 | 11 | `baseline_version` 删除 `is_active` 字段与 `UNIQUE(plan_id,is_active)`；保留 `UNIQUE(plan_id,baseline_no)`、新增 `UNIQUE(plan_id,plan_version_id)`、`is_readonly=1 CHECK`、`content_hash NOT NULL`；写明无差别 BEFORE UPDATE/DELETE 冻结触发器；状态外移到 `plan_active_baseline` + `baseline_switch_log` | §2.3 / §2.4 / §2.5 | R1-1 |
 | 12 | `plan_activity` 降为稳定主实体，`plan_activity_version` 为每版本属性快照（`change_type` 四值、`UNIQUE(activity_id,plan_version_id)`）；`activity_dependency` / `progress_record` 增 `plan_version_id` | §2.6~§2.9 | R1-2 |
@@ -828,4 +842,25 @@ CREATE VIRTUAL TABLE IF NOT EXISTS issue_fts USING fts5(
 | 15 | 明确写出「`entity_relationship` 仅表达业务实体间语义关系（同义 / 整机-部件），**不得承载** Issue/Risk/Task 等业务事项的合并；事项合并只由 `business_subject_merge` 表达」；`entity_relationship` 原「含合并链 / merge」表述作废 | §4 引言 / §5.4 | R1-4 |
 | 16 | `review_queue` 扁平表作废，改为审核链四表完整说明（任务 / M:N 链接 / 结果明细 / 正式对象映射） | §6.4~§6.7 | R1-5 |
 
-> 本文所有表名、字段、约束、触发器、索引、FTS 对应关系、数量统计均以《Phase1.2_数据库表结构设计.md》(R1) 为唯一真值源；本轮未创建 / 执行任何 SQL 文件，未触碰 `01_Data/epcs_intelligence.db`。
+> 本文所有表名、字段、约束、触发器、索引、FTS 对应关系、数量统计均以《Phase1.2_数据库表结构设计.md》(**R2**) 为唯一真值源；本轮未创建 / 执行任何 SQL 文件，未触碰 `01_Data/epcs_intelligence.db`。
+
+---
+
+## 9. R2 定向整改同步说明（2026-11-12）
+
+> 本轮为 Phase 1.2 **R2 定向整改**（复审 7 项阻断 + 4 项实现边界），以《Phase1.2_数据库表结构设计.md》(**R2**) 为唯一真值源；R1 正文保留，与其冲突的表述已逐项修订。
+
+| # | 位置 | R1 表述 → R2 修订 | 对应 |
+|---|---|---|---|
+| 1 | §0.1 统计表 / §7.3 触发器核对 | 触发器 **96** → **126**（+30：ID/归属不可变 24 + 审核证据 2 + 合并链 4）；75 表 / 24 FTS / 视图 0 不变 | 全局 |
+| 2 | §2 域引言 + §2.3~§2.9 | 增 3 个 `UNIQUE(plan_id,id)` 复合父键；7 张表改/增复合 FK；`plan_activity_version` / `progress_record` 各增 `plan_id NOT NULL`；补 `approved_by` / `switched_by` 人员 FK | P1 / B3 / B4 |
+| 3 | §2.5 `baseline_switch_log` | R1「`audit_log_id` 无硬 FK」属遗漏 → R2 补 `REFERENCES audit_log(id)`；`from/to_baseline_id` 改复合 FK | B3 / P1 |
+| 4 | §4.1.3 `business_subject_merge` | R1 仅 `CHECK(from<>to)` → R2 增 `uq_bsm_active_from` 部分唯一索引 + 4 触发器；`merged_by` / `undone_by` 改可空 `REFERENCES person(id)` | P7 / B4 |
+| 5 | §4.5 `action_measure` / `action_measure_link` | 「至少一个属主 / 一个措施挂多个属主 M:N」→ **「恰好一个主属主 + 0..N 附加属主」**；link 不得重复登记主属主 | P2 |
+| 6 | §6.6 `review_decision` | `evidence_source_reference_id` 可空 → **`NOT NULL` + FK + 2 触发器**（拒绝软删证据）；不设例外审核类型 | P3 |
+| 7 | §7.3 重建 / 一致性 | 去掉 `WHERE is_deleted=0`（方案 A）；一致性检查扩为 5 项；新增 24 个 ID/归属不可变触发器 | P5 / B2 |
+| 8 | 全文 `check_polymorphic_refs` | R1 的 `sp_` 前缀命名 → **应用层 SQL 自检语句集（非存储过程，不能 `CALL`）**；8 类 / 10 分支全类型映射 + `IS NULL` 反连接 + 双向验证，见真值源 §7.6.2 | P6 |
+| 9 | §0.4 / §7.2 FTS 清单 | 24 张 FTS 与 72 同步触发器改为 **24 行逐表字段映射 + 确定生成规则 + 生成结果核验**（真值源 §7.7） | B1 |
+| 10 | P4 概念分界 | **Entity（船舶/设备/区域/组织）经 `source_reference` 直接追溯来源**，不挂 `subject_id`、`subject_kind` 不含 ENTITY；仅 Issue/Risk/Task/Decision/KnowledgeItem 经 `business_subject` 归一；详见《数据来源与证据追溯规范》§1 | P4 |
+
+> **边界声明**：本轮只改设计文档；未创建 `migrations/001_init.sql`、未对 `01_Data/epcs_intelligence.db` 执行任何 DDL/DML、未导入资料、未接入外部账号 / Ollama / DWG SDK、未改动旧知识库、未执行 git commit；空库保持。**当前状态：R2 定向整改完成，等待系统架构师再次审核**。
