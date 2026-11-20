@@ -47,3 +47,11 @@ secrets*.json
 
 # --- 其余仅供说明文档 / 脚本 / 源码 ---
 # (初始化脚本 scripts/ 与 migrations/ 允许入库)
+
+# 统一入口与归档里的实际资料不入库；.gitkeep 保留目录
+01_Data/intake/inbox/*
+!01_Data/intake/inbox/.gitkeep
+01_Data/archive/company/*
+!01_Data/archive/company/.gitkeep
+01_Data/archive/personal/*
+!01_Data/archive/personal/.gitkeep
